@@ -19,12 +19,14 @@ const modes = [
   ['timeline', 'Timeline'],
   ['evidence', 'Evidence Matrix'],
   ['memo', 'Legal Memo'],
-  ['contract', 'Contract Review']
+  ['contract', 'Contract Review'],
+  ['settlement', 'Settlement / Costs Review']
 ] as const;
 
 export default function Home() {
   const [docs, setDocs] = useState<Doc[]>([]);
   const [paste, setPaste] = useState('');
+  const [settlementDraft, setSettlementDraft] = useState('');
   const [question, setQuestion] = useState('');
   const [mode, setMode] = useState('qa');
   const [jurisdiction, setJurisdiction] = useState('New Zealand');
@@ -41,10 +43,14 @@ export default function Home() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   const record = useMemo(() => {
-    const blocks = docs.map((d, i) => `===== DOCUMENT ${i + 1}: ${d.name} =====\n${d.text}`);
-    if (paste.trim()) blocks.push(`===== PASTED MATERIAL =====\n${paste.trim()}`);
+    const blocks: string[] = [];
+    if (settlementDraft.trim()) {
+      blocks.push(`===== PROPOSED OUTGOING SETTLEMENT COMMUNICATION =====\n${settlementDraft.trim()}`);
+    }
+    blocks.push(...docs.map((d, i) => `===== BACKGROUND DOCUMENT ${i + 1}: ${d.name} =====\n${d.text}`));
+    if (paste.trim()) blocks.push(`===== MATTER BACKGROUND / OUR SIDE / SUPPORTING MATERIAL =====\n${paste.trim()}`);
     return blocks.join('\n\n');
-  }, [docs, paste]);
+  }, [docs, paste, settlementDraft]);
 
   const totalChars = record.length;
 
@@ -83,6 +89,9 @@ export default function Home() {
     setAnswer('');
     setReasoningTokens(null);
     setModelUsed('');
+    if (mode === 'settlement' && !settlementDraft.trim()) {
+      return setError('Paste the proposed outgoing settlement / without-prejudice letter or email you want reviewed.');
+    }
     if (!record.trim()) return setError('Add at least one document or paste legal material first.');
     if (provider !== 'openrouter' && !apiKey.trim()) return setError('Enter your AI provider API key. It stays in memory and is not saved by this app.');
     if (mode === 'qa' && !question.trim()) return setError('Ask a question or choose a structured analysis mode.');
@@ -126,7 +135,7 @@ export default function Home() {
           <div className="sectionTitle">1. Matter record</div>
           <button className="upload" onClick={() => fileRef.current?.click()} disabled={extracting}>
             <span className="uploadIcon">＋</span>
-            <strong>{extracting ? 'Extracting…' : 'Add legal documents'}</strong>
+            <strong>{extracting ? 'Extracting…' : 'Add background documents'}</strong>
             <small>PDF, DOCX, TXT, MD · max 4 MB each</small>
           </button>
           <input ref={fileRef} type="file" hidden multiple accept=".pdf,.docx,.txt,.md" onChange={(e) => addFiles(e.target.files)} />
@@ -143,8 +152,8 @@ export default function Home() {
             ))}
           </div>
 
-          <label className="label">Paste evidence, legislation or case excerpts</label>
-          <textarea className="paste" value={paste} onChange={(e) => setPaste(e.target.value)} placeholder="Paste text here. Label official authorities clearly so the AI can distinguish verified law from model memory." />
+          <label className="label">Matter background / your side / evidence / authorities</label>
+          <textarea className="paste" value={paste} onChange={(e) => setPaste(e.target.value)} placeholder="Explain your side, paste supporting facts/evidence, or add legislation/case excerpts. This is treated as background, not as text you intend to send to the other side." />
           <div className="recordStats">{totalChars.toLocaleString()} record characters loaded</div>
 
           <div className="sectionTitle space">2. Jurisdiction</div>
@@ -167,8 +176,28 @@ export default function Home() {
             ))}
           </div>
 
-          <label className="label">Question / instruction</label>
-          <textarea className="question" value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="Example: What facts support Peter's interpretation, what facts cut against it, and what has not yet been proven?" />
+          {mode === 'settlement' && (
+            <>
+              <label className="label">Proposed outgoing settlement / without-prejudice letter or email</label>
+              <textarea
+                className="question"
+                value={settlementDraft}
+                onChange={(e) => setSettlementDraft(e.target.value)}
+                placeholder={'Paste EXACTLY what you are considering sending. The AI will proofread it, fact-check it against your background material, stress-test it as opposing counsel, review the without-prejudice / costs framing, identify admissions and red flags, and produce a cleaner proposed version.'}
+              />
+              <p className="hint">Keep private case background in the left-hand box. Put only the communication you may actually send here.</p>
+            </>
+          )}
+
+          <label className="label">{mode === 'settlement' ? 'Specific concerns / review instructions (optional)' : 'Question / instruction'}</label>
+          <textarea
+            className="question"
+            value={question}
+            onChange={(e) => setQuestion(e.target.value)}
+            placeholder={mode === 'settlement'
+              ? 'Example: We want to stay firm, make no admission of liability, preserve our costs position, and make sure nothing contradicts the attached timeline.'
+              : "Example: What facts support Peter's interpretation, what facts cut against it, and what has not yet been proven?"}
+          />
 
           <div className="providerRow">
             <div>
@@ -193,7 +222,9 @@ export default function Home() {
           )}
 
           {error && <div className="error">{error}</div>}
-          <button className="analyze" onClick={analyze} disabled={busy || extracting}>{busy ? 'Analyzing record…' : 'Analyze the Record'}</button>
+          <button className="analyze" onClick={analyze} disabled={busy || extracting}>
+            {busy ? 'Analyzing record…' : mode === 'settlement' ? 'Review Before Sending' : 'Analyze the Record'}
+          </button>
           <div className="guardrail"><strong>Built-in guardrail:</strong> allegations ≠ facts · unsupplied law ≠ verified law · unsupported claims are labeled, not filled in.</div>
         </section>
 
@@ -212,17 +243,19 @@ export default function Home() {
           {!answer && !busy && (
             <div className="empty">
               <div className="seal">§</div>
-              <h2>Evidence first.</h2>
-              <p>Add the record, select the legal task, then interrogate it. Material conclusions should trace back to what you actually supplied.</p>
+              <h2>{mode === 'settlement' ? 'Review it before they see it.' : 'Evidence first.'}</h2>
+              <p>{mode === 'settlement'
+                ? 'Add your background record, paste the exact communication you may send, and let the system test both the wording and what opposing counsel could do with it.'
+                : 'Add the record, select the legal task, then interrogate it. Material conclusions should trace back to what you actually supplied.'}</p>
             </div>
           )}
-          {busy && <div className="loading"><span />Analyzing documents and separating supported facts from assumptions…</div>}
+          {busy && <div className="loading"><span />{mode === 'settlement' ? 'Proofreading, fact-checking and stress-testing the proposed communication…' : 'Analyzing documents and separating supported facts from assumptions…'}</div>}
           {answer && <pre className="answer">{answer}</pre>}
         </section>
       </div>
 
       <footer>
-        <span>Reanalysis Legal v1.1</span>
+        <span>Reanalysis Legal v1.2</span>
         <span>Document analysis software — not a law firm</span>
       </footer>
     </main>
