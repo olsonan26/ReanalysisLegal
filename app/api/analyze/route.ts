@@ -2,10 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { LEGAL_SYSTEM, MODE_INSTRUCTIONS, jurisdictionNote } from '@/lib/legal-system';
 
 export const runtime = 'nodejs';
-export const maxDuration = 120;
+// Vercel Hobby + Fluid Compute supports up to 300s. Keep a small buffer so
+// we can return a useful error before the platform terminates the function.
+export const maxDuration = 300;
 
 const MAX_RECORD_CHARS = 350_000;
 const MAX_QUESTION_CHARS = 12_000;
+const MODEL_TIMEOUT_MS = 285_000;
 const OPENROUTER_DEFAULT_MODEL = 'deepseek/deepseek-v4.1-flash';
 
 type Provider = 'openrouter' | 'openai' | 'anthropic' | 'gemini';
@@ -27,6 +30,10 @@ type ModelResult = {
 
 function jsonError(message: string, status = 400) {
   return NextResponse.json({ error: message }, { status, headers: { 'Cache-Control': 'no-store' } });
+}
+
+function modelSignal() {
+  return AbortSignal.timeout(MODEL_TIMEOUT_MS);
 }
 
 function extractOpenAIText(data: any): string {
@@ -56,7 +63,7 @@ async function callOpenRouter(apiKey: string, model: string, system: string, use
       reasoning: { effort: 'high' },
       usage: { include: true }
     }),
-    signal: AbortSignal.timeout(115_000)
+    signal: modelSignal()
   });
 
   const data = await res.json();
@@ -82,7 +89,7 @@ async function callOpenAI(apiKey: string, model: string, system: string, user: s
       ],
       max_output_tokens: 8000
     }),
-    signal: AbortSignal.timeout(115_000)
+    signal: modelSignal()
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error?.message || `OpenAI request failed (${res.status})`);
@@ -98,7 +105,7 @@ async function callAnthropic(apiKey: string, model: string, system: string, user
       'anthropic-version': '2023-06-01'
     },
     body: JSON.stringify({ model, max_tokens: 8000, system, messages: [{ role: 'user', content: user }] }),
-    signal: AbortSignal.timeout(115_000)
+    signal: modelSignal()
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error?.message || `Anthropic request failed (${res.status})`);
@@ -115,7 +122,7 @@ async function callGemini(apiKey: string, model: string, system: string, user: s
       contents: [{ role: 'user', parts: [{ text: user }] }],
       generationConfig: { maxOutputTokens: 8000 }
     }),
-    signal: AbortSignal.timeout(115_000)
+    signal: modelSignal()
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error?.message || `Gemini request failed (${res.status})`);
@@ -175,6 +182,16 @@ export async function POST(req: NextRequest) {
       { headers: { 'Cache-Control': 'no-store, max-age=0' } }
     );
   } catch (error) {
+    const isTimeout =
+      error instanceof DOMException && (error.name === 'TimeoutError' || error.name === 'AbortError');
+
+    if (isTimeout) {
+      return jsonError(
+        'The AI analysis took longer than 4 minutes 45 seconds. Try a smaller document set, a more focused question, or a faster model.',
+        504
+      );
+    }
+
     const message = error instanceof Error ? error.message : 'Analysis failed.';
     return jsonError(message, 500);
   }
