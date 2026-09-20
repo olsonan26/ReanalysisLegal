@@ -6,7 +6,7 @@ type Doc = { id: string; name: string; text: string; chars: number; truncated?: 
 type Provider = 'openai' | 'anthropic' | 'gemini';
 
 const providers: Record<Provider, { label: string; model: string }> = {
-  openai: { label: 'OpenAI', model: 'gpt-5.6-luna' },
+  openai: { label: 'OpenAI', model: 'gpt-5.6-sol' },
   anthropic: { label: 'Anthropic', model: 'claude-sonnet-5' },
   gemini: { label: 'Google Gemini', model: 'gemini-3.8-flash' }
 };
