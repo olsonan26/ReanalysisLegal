@@ -3,9 +3,10 @@
 import { useMemo, useRef, useState } from 'react';
 
 type Doc = { id: string; name: string; text: string; chars: number; truncated?: boolean };
-type Provider = 'openai' | 'anthropic' | 'gemini';
+type Provider = 'openrouter' | 'openai' | 'anthropic' | 'gemini';
 
 const providers: Record<Provider, { label: string; model: string }> = {
+  openrouter: { label: 'OpenRouter · DeepSeek', model: 'deepseek/deepseek-v4.1-flash' },
   openai: { label: 'OpenAI', model: 'gpt-5.6-sol' },
   anthropic: { label: 'Anthropic', model: 'claude-sonnet-5' },
   gemini: { label: 'Google Gemini', model: 'gemini-3.8-flash' }
@@ -27,10 +28,12 @@ export default function Home() {
   const [question, setQuestion] = useState('');
   const [mode, setMode] = useState('qa');
   const [jurisdiction, setJurisdiction] = useState('New Zealand');
-  const [provider, setProvider] = useState<Provider>('openai');
-  const [model, setModel] = useState(providers.openai.model);
+  const [provider, setProvider] = useState<Provider>('openrouter');
+  const [model, setModel] = useState(providers.openrouter.model);
   const [apiKey, setApiKey] = useState('');
   const [answer, setAnswer] = useState('');
+  const [reasoningTokens, setReasoningTokens] = useState<number | null>(null);
+  const [modelUsed, setModelUsed] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [extracting, setExtracting] = useState(false);
@@ -48,6 +51,7 @@ export default function Home() {
   function switchProvider(next: Provider) {
     setProvider(next);
     setModel(providers[next].model);
+    setApiKey('');
   }
 
   async function addFiles(files: FileList | null) {
@@ -77,8 +81,10 @@ export default function Home() {
   async function analyze() {
     setError('');
     setAnswer('');
+    setReasoningTokens(null);
+    setModelUsed('');
     if (!record.trim()) return setError('Add at least one document or paste legal material first.');
-    if (!apiKey.trim()) return setError('Enter your AI provider API key. It stays in memory and is not saved by this app.');
+    if (provider !== 'openrouter' && !apiKey.trim()) return setError('Enter your AI provider API key. It stays in memory and is not saved by this app.');
     if (mode === 'qa' && !question.trim()) return setError('Ask a question or choose a structured analysis mode.');
 
     setBusy(true);
@@ -92,6 +98,8 @@ export default function Home() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Analysis failed.');
       setAnswer(`${data.truncated ? 'RECORD LIMIT: Only the first 350,000 characters were analyzed.\n\n' : ''}${data.answer}`);
+      setModelUsed(data.model || model);
+      setReasoningTokens(typeof data.reasoningTokens === 'number' ? data.reasoningTokens : null);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Analysis failed.');
     } finally {
@@ -106,7 +114,7 @@ export default function Home() {
           <div className="eyebrow">SOURCE-GROUNDED LEGAL DOCUMENT AI</div>
           <h1>Reanalysis <span>Legal</span></h1>
         </div>
-        <div className="status"><span className="dot" /> BYOK · No database · No document persistence</div>
+        <div className="status"><span className="dot" /> OpenRouter · No database · No document persistence</div>
       </header>
 
       <section className="notice">
@@ -175,12 +183,12 @@ export default function Home() {
             </div>
           </div>
 
-          <label className="label">Provider API key</label>
-          <input className="key" type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} autoComplete="off" placeholder="Used for this browser session only" />
+          <label className="label">{provider === 'openrouter' ? 'OpenRouter API key override (optional)' : 'Provider API key'}</label>
+          <input className="key" type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} autoComplete="off" placeholder={provider === 'openrouter' ? 'Uses secure server key when left blank' : 'Used for this browser session only'} />
           <button className="privacyLink" onClick={() => setShowPrivacy((v) => !v)}>{showPrivacy ? 'Hide' : 'Show'} privacy/data-flow details</button>
           {showPrivacy && (
             <div className="privacy">
-              Files are sent to this Vercel deployment for text extraction. Extracted text and your API key are then sent through the server function to the provider you select. This app does not intentionally persist either one and sends <code>no-store</code> cache directives. Vercel and the selected AI provider still process the request under their own terms. Do not upload privileged/confidential material unless that data flow is acceptable to you or your lawyer/organization.
+              Files are sent to this Vercel deployment for text extraction. Extracted text is then sent through the server function to the provider you select. For OpenRouter, the deployment can use a server-side <code>OPENROUTER_API_KEY</code>; it is never intentionally sent to the browser. Other provider keys entered here are used for that request only. This app does not intentionally persist document text or keys and sends <code>no-store</code> cache directives. Vercel and the selected AI provider still process the request under their own terms. Do not upload privileged/confidential material unless that data flow is acceptable to you or your lawyer/organization.
             </div>
           )}
 
@@ -193,7 +201,11 @@ export default function Home() {
           <div className="outputHeader">
             <div>
               <div className="sectionTitle">Analysis</div>
-              <small>{jurisdiction} · {modes.find((m) => m[0] === mode)?.[1]}</small>
+              <small>
+                {jurisdiction} · {modes.find((m) => m[0] === mode)?.[1]}
+                {modelUsed ? ` · ${modelUsed}` : ''}
+                {reasoningTokens !== null ? ` · ${reasoningTokens.toLocaleString()} reasoning tokens` : ''}
+              </small>
             </div>
             {answer && <button onClick={() => navigator.clipboard.writeText(answer)}>Copy</button>}
           </div>
@@ -210,7 +222,7 @@ export default function Home() {
       </div>
 
       <footer>
-        <span>Reanalysis Legal v1.0</span>
+        <span>Reanalysis Legal v1.1</span>
         <span>Document analysis software — not a law firm</span>
       </footer>
     </main>
