@@ -6,8 +6,9 @@ export const maxDuration = 120;
 
 const MAX_RECORD_CHARS = 350_000;
 const MAX_QUESTION_CHARS = 12_000;
+const OPENROUTER_DEFAULT_MODEL = 'deepseek/deepseek-v4.1-flash';
 
-type Provider = 'openai' | 'anthropic' | 'gemini';
+type Provider = 'openrouter' | 'openai' | 'anthropic' | 'gemini';
 
 type AnalyzeBody = {
   provider?: Provider;
@@ -17,6 +18,11 @@ type AnalyzeBody = {
   mode?: string;
   question?: string;
   record?: string;
+};
+
+type ModelResult = {
+  text: string;
+  reasoningTokens?: number;
 };
 
 function jsonError(message: string, status = 400) {
@@ -31,7 +37,40 @@ function extractOpenAIText(data: any): string {
   return '';
 }
 
-async function callOpenAI(apiKey: string, model: string, system: string, user: string) {
+async function callOpenRouter(apiKey: string, model: string, system: string, user: string): Promise<ModelResult> {
+  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+      'HTTP-Referer': 'https://reanalysislegal.vercel.app',
+      'X-Title': 'Reanalysis Legal'
+    },
+    body: JSON.stringify({
+      model: model || OPENROUTER_DEFAULT_MODEL,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user }
+      ],
+      max_tokens: 8000,
+      reasoning: { effort: 'high' },
+      usage: { include: true }
+    }),
+    signal: AbortSignal.timeout(115_000)
+  });
+
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error?.message || `OpenRouter request failed (${res.status})`);
+
+  const text = data?.choices?.[0]?.message?.content || '';
+  const reasoningTokens =
+    data?.usage?.completion_tokens_details?.reasoning_tokens ??
+    data?.usage?.completionTokensDetails?.reasoningTokens;
+
+  return { text, reasoningTokens };
+}
+
+async function callOpenAI(apiKey: string, model: string, system: string, user: string): Promise<ModelResult> {
   const res = await fetch('https://api.openai.com/v1/responses', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
@@ -47,10 +86,10 @@ async function callOpenAI(apiKey: string, model: string, system: string, user: s
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error?.message || `OpenAI request failed (${res.status})`);
-  return extractOpenAIText(data);
+  return { text: extractOpenAIText(data) };
 }
 
-async function callAnthropic(apiKey: string, model: string, system: string, user: string) {
+async function callAnthropic(apiKey: string, model: string, system: string, user: string): Promise<ModelResult> {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -63,10 +102,10 @@ async function callAnthropic(apiKey: string, model: string, system: string, user
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error?.message || `Anthropic request failed (${res.status})`);
-  return (data?.content || []).map((p: any) => (p?.type === 'text' ? p.text : '')).filter(Boolean).join('\n');
+  return { text: (data?.content || []).map((p: any) => (p?.type === 'text' ? p.text : '')).filter(Boolean).join('\n') };
 }
 
-async function callGemini(apiKey: string, model: string, system: string, user: string) {
+async function callGemini(apiKey: string, model: string, system: string, user: string): Promise<ModelResult> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
   const res = await fetch(url, {
     method: 'POST',
@@ -80,23 +119,35 @@ async function callGemini(apiKey: string, model: string, system: string, user: s
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error?.message || `Gemini request failed (${res.status})`);
-  return (data?.candidates?.[0]?.content?.parts || []).map((p: any) => p?.text || '').filter(Boolean).join('\n');
+  return { text: (data?.candidates?.[0]?.content?.parts || []).map((p: any) => p?.text || '').filter(Boolean).join('\n') };
 }
 
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as AnalyzeBody;
     const provider = body.provider;
-    const apiKey = (body.apiKey || '').trim();
+    const suppliedApiKey = (body.apiKey || '').trim();
     const model = (body.model || '').trim();
     const record = (body.record || '').trim();
     const question = (body.question || '').trim().slice(0, MAX_QUESTION_CHARS);
     const mode = body.mode || 'qa';
     const jurisdiction = body.jurisdiction || 'Not specified';
 
-    if (!provider || !['openai', 'anthropic', 'gemini'].includes(provider)) return jsonError('Choose a supported AI provider.');
-    if (!apiKey) return jsonError('Enter your provider API key. It is used for this request only and is not stored by this app.');
-    if (!model) return jsonError('Enter a model ID.');
+    if (!provider || !['openrouter', 'openai', 'anthropic', 'gemini'].includes(provider)) return jsonError('Choose a supported AI provider.');
+
+    const apiKey = provider === 'openrouter'
+      ? suppliedApiKey || (process.env.OPENROUTER_API_KEY || '').trim()
+      : suppliedApiKey;
+
+    if (!apiKey) {
+      if (provider === 'openrouter') {
+        return jsonError('OpenRouter is not configured on this deployment. Set OPENROUTER_API_KEY in Vercel, or enter an OpenRouter key for this request.');
+      }
+      return jsonError('Enter your provider API key. It is used for this request only and is not stored by this app.');
+    }
+
+    const resolvedModel = model || (provider === 'openrouter' ? OPENROUTER_DEFAULT_MODEL : '');
+    if (!resolvedModel) return jsonError('Enter a model ID.');
     if (!record) return jsonError('Add at least one document or paste record text first.');
     if (!question && mode === 'qa') return jsonError('Ask a question, or choose a structured analysis mode.');
 
@@ -106,13 +157,23 @@ export async function POST(req: NextRequest) {
     const system = `${LEGAL_SYSTEM}\n\n${jurisdictionNote(jurisdiction)}`;
     const user = `${task}\n\nUSER REQUEST:\n${question || 'Perform the selected analysis.'}\n\nSUPPLIED RECORD${truncated ? ' (TRUNCATED BY APPLICATION LIMIT — disclose this limitation)' : ''}:\n${clipped}`;
 
-    let answer = '';
-    if (provider === 'openai') answer = await callOpenAI(apiKey, model, system, user);
-    if (provider === 'anthropic') answer = await callAnthropic(apiKey, model, system, user);
-    if (provider === 'gemini') answer = await callGemini(apiKey, model, system, user);
-    if (!answer) throw new Error('The model returned an empty response.');
+    let result: ModelResult = { text: '' };
+    if (provider === 'openrouter') result = await callOpenRouter(apiKey, resolvedModel, system, user);
+    if (provider === 'openai') result = await callOpenAI(apiKey, resolvedModel, system, user);
+    if (provider === 'anthropic') result = await callAnthropic(apiKey, resolvedModel, system, user);
+    if (provider === 'gemini') result = await callGemini(apiKey, resolvedModel, system, user);
+    if (!result.text) throw new Error('The model returned an empty response.');
 
-    return NextResponse.json({ answer, truncated, analyzedChars: clipped.length }, { headers: { 'Cache-Control': 'no-store, max-age=0' } });
+    return NextResponse.json(
+      {
+        answer: result.text,
+        truncated,
+        analyzedChars: clipped.length,
+        model: resolvedModel,
+        reasoningTokens: result.reasoningTokens
+      },
+      { headers: { 'Cache-Control': 'no-store, max-age=0' } }
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Analysis failed.';
     return jsonError(message, 500);
